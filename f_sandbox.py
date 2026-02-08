@@ -19,7 +19,7 @@ def add_team_gold_diff(stats_df):
     stats_df["team_gold_diff"] = team_gold - (team_sum - team_gold)
     return stats_df
 
-# 3. Team Kill Diff
+# Team Kill Diff
 def add_team_kill_diff(stats_df):
     team_kills = stats_df.groupby(["match_id", "frame", "team"])["kills_in_frame"].transform("sum")
     team_sum = stats_df.groupby(["match_id", "frame"])["kills_in_frame"].transform("sum")
@@ -28,7 +28,7 @@ def add_team_kill_diff(stats_df):
     stats_df["team_kill_diff"] = team_kills - (team_sum - team_kills)
     return stats_df
 
-# 3. Kill Participation %
+#  Kill Participation %
 def add_kp(stats_df):
     if "kills_in_frame" not in stats_df.columns:
         stats_df["kills_in_frame"] = 0
@@ -40,7 +40,7 @@ def add_kp(stats_df):
     stats_df["kp_percent"] = ((stats_df["kills_in_frame"] + assists) / team_kills).fillna(0)
     return stats_df
 
-# 4. CS Farming Rate Change (detecting farming falloff or surge)
+# CS Farming Rate Change (detecting farming falloff or moves back into gamer position)
 def add_cs_rate_change(stats_df):
     stats_df = stats_df.sort_values(["match_id", "participant_id", "frame"])
     stats_df["cs_per_min_delta"] = stats_df.groupby(["match_id", "participant_id"])["creep_score"].diff().fillna(0)

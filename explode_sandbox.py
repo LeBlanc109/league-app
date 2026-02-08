@@ -1,13 +1,11 @@
 import pandas as pd
-# ═══════════════════════════════════════════
-# DEEP ANALYSIS — exploding nested lists
-# ═══════════════════════════════════════════
+
+# Helper functions start with _
+# explode victimDamageReceived and victimDamageDealt
+
 
 def _explode_kill_damage(events_df):
-    """
-    Helper: explode victimDamageReceived and victimDamageDealt
-    into their own flat DataFrames. Called once, results passed to features.
-    """
+  
     kills = events_df[events_df["type"] == "CHAMPION_KILL"].copy()
     kills["kill_id"] = range(len(kills))
 
@@ -38,13 +36,10 @@ def _explode_kill_damage(events_df):
 
 # 5. Tower Shots Taken (died to tower dive)
 def add_kill_features(stats_df, events_df):
-    """
-    Adds tower_deaths, free_kills, and zero_dmg_deaths
-    from a single call to _explode_kill_damage.
-    """
+   
     kills, damage_recv, damage_dealt = _explode_kill_damage(events_df)
 
-    # --- Tower Deaths ---
+    # Tower involved with death
     tower_dmg = damage_recv[damage_recv["dmg_source_name"].str.contains("Turret|Tower", case=False, na=False)]
     tower_kills = tower_dmg[["kill_id", "match_id", "frame", "victimId"]].drop_duplicates(subset=["kill_id"])
     tower_deaths = tower_kills.groupby(["match_id", "frame", "victimId"]).size().reset_index(name="tower_deaths")
@@ -53,7 +48,7 @@ def add_kill_features(stats_df, events_df):
     stats_df = stats_df.merge(tower_deaths, on=["match_id", "frame", "participant_id"], how="left")
     stats_df["tower_deaths"] = stats_df["tower_deaths"].fillna(0).astype(int)
 
-    # --- Free Kills ---
+    # "Free" Kills
     victim_dmg_back = damage_dealt.groupby("kill_id").agg(
         magic_back=("dmg_magic", "sum"),
         phys_back=("dmg_physical", "sum"),
@@ -71,7 +66,7 @@ def add_kill_features(stats_df, events_df):
     stats_df = stats_df.merge(free_kills, on=["match_id", "frame", "participant_id"], how="left")
     stats_df["free_kills"] = stats_df["free_kills"].fillna(0).astype(int)
 
-    # --- Zero Damage Deaths ---
+    # Zero Damage Deaths
     kills_with_dealt = damage_dealt["kill_id"].unique()
     kills["victim_did_zero"] = (~kills["kill_id"].isin(kills_with_dealt)).astype(int)
 
@@ -85,7 +80,6 @@ def add_kill_features(stats_df, events_df):
 
 
 def _count_assists(assist_list):
-    """Helper to count assists without lambda."""
     if isinstance(assist_list, list):
         return len(assist_list) + 1
     return 1
@@ -124,13 +118,9 @@ def add_objective_streaks(stats_df, events_df):
     stats_df["obj_streak"] = stats_df.groupby(["match_id", "participant_id"])["obj_streak"].ffill().fillna(0).astype(int)
     return stats_df
 
-
-# ═══════════════════════════════════════════
-# Grubs → Tower Damage (frame-aware)
-# ═══════════════════════════════════════════
-
+# When a team gets Grubs → Tower Damage (frame-aware)
+#Track tower damage in the 5 frames immeditaely after grubs
 def add_grub_tower_impact(stats_df, events_df):
-    """Track tower damage in the 5 frames after getting grubs."""
     grubs = events_df[(events_df["type"] == "ELITE_MONSTER_KILL") & (events_df["monsterType"] == "HORDE")].copy()
 
     if len(grubs) == 0:
@@ -151,12 +141,9 @@ def add_grub_tower_impact(stats_df, events_df):
     return stats_df
 
 
-# ═══════════════════════════════════════════
 # Baron → Tower Payoff (frame-aware, per baron)
-# ═══════════════════════════════════════════
-
 def add_baron_tower_impact(stats_df, events_df):
-    """Track turrets killed in 5 frames after each baron, per frame."""
+    """Track turrets killed in 5 FRAMES... after EACH baron, PER frame. holy shmoly"""
     barons = events_df[(events_df["type"] == "ELITE_MONSTER_KILL") & (events_df["monsterType"] == "BARON_NASHOR")].copy()
 
     if len(barons) == 0:
@@ -180,10 +167,8 @@ def add_baron_tower_impact(stats_df, events_df):
     return stats_df
 
 
-# ═══════════════════════════════════════════
 # Elder Dragon → Damage During Buff (frame-aware)
-# ═══════════════════════════════════════════
-
+# same as the baron
 def add_elder_damage_impact(stats_df, events_df):
     """Track damage done during each elder buff window (5 frames), per frame."""
     elders = events_df[
