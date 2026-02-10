@@ -3,6 +3,9 @@ import pandas as pd
 from riot_auth import api_key
 from brain import activate_brain
 import annoying as brain_neuron
+import logging
+
+logging.basicConfig(level=logging.INFO)
 
 #import PATH??
 
