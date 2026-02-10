@@ -16,6 +16,7 @@ class RateLimiter:
 
     def wait(self):
         self.total_calls += 1
+        print(f"Progress: {self.total_calls} / XXX calls")
         if self.total_calls % 50 == 0:
             print(f"Progress: {self.total_calls} / ~1401 calls")
         time.sleep(1.2)

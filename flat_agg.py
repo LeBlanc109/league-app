@@ -1,81 +1,63 @@
 def get_flat_events_aggregation(events_df):
-    # All FLAT, as in NO relationships... event features go here
-    flat_agg = []
+   flat_agg = []
 
-    # Kills
-    kills = events_df[events_df["type"] == "CHAMPION_KILL"]
-    kills_event = kills.groupby(["match_id", "frame", "killerId"]).size().reset_index(name="kills_in_frame")
-    kills_event = kills_event.rename(columns={"killerId": "participant_id"})
-    flat_agg.append(kills_event)
+   def _agg_count(df, group_col, feat_name):
+       """Group by match_id/frame/group_col, count rows, rename to participant_id."""
 
-    # Wards
-    wards = events_df[events_df["type"] == "WARD_PLACED"]
-    create_ward_event = wards.groupby(["match_id", "frame", "creatorId"]).size().reset_index(name="wards_placed")
-    create_ward_event = create_ward_event.rename(columns={"creatorId": "participant_id"})
-    flat_agg.append(create_ward_event)
+       if df.empty:
+           return None
+       
+       result = df.groupby(["match_id", "frame", group_col]).size().reset_index(name=feat_name)
+       return result.rename(columns={group_col: "participant_id"})
+   
+   def _agg_sum(df, group_col, value_col, feat_name):
+       """Group by match_id/frame/group_col, sum a column, rename to participant_id."""
 
-    # Deaths
-    deaths = events_df[events_df["type"] == "CHAMPION_KILL"]
-    death_event = deaths.groupby(["match_id", "frame", "victimId"]).size().reset_index(name="deaths_in_frame")
-    death_event = death_event.rename(columns={"victimId": "participant_id"})
-    flat_agg.append(death_event)
+       if df.empty:
+           return None
+       
+       result = df.groupby(["match_id", "frame", group_col])[value_col].sum().reset_index(name=feat_name)
+       return result.rename(columns={group_col: "participant_id"})
+   def _add(result):
+       
+       if result is not None:
+           flat_agg.append(result)
 
-    ########################### Assists — explode the assistingParticipantIds list first
-    assist_events = events_df[events_df["type"] == "CHAMPION_KILL"].dropna(subset=["assistingParticipantIds"])
-    assists_exploded = assist_events.explode("assistingParticipantIds")
-    assists_feat = assists_exploded.groupby(["match_id", "frame", "assistingParticipantIds"]).size().reset_index(name="assists_in_frame")
-    assists_feat = assists_feat.rename(columns={"assistingParticipantIds": "participant_id"})
-    flat_agg.append(assists_feat)
+   # Champion kills — one filter, three features (kills, deaths, assists)
+   champ_kills = events_df[events_df["type"] == "CHAMPION_KILL"]
+   _add(_agg_count(champ_kills, "killerId",  "kills_in_frame"))
+   _add(_agg_count(champ_kills, "victimId",  "deaths_in_frame"))
+   assists = champ_kills.dropna(subset=["assistingParticipantIds"]).explode("assistingParticipantIds")
+   _add(_agg_count(assists, "assistingParticipantIds", "assists_in_frame"))
+   bounties = champ_kills.dropna(subset=["shutdownBounty"])
+   _add(_agg_sum(bounties, "killerId", "shutdownBounty", "bounty_gold_earned"))
 
-    # Wards Destroyed
-    ward_kills = events_df[events_df["type"] == "WARD_KILL"]
-    ward_kill_event = ward_kills.groupby(["match_id", "frame", "killerId"]).size().reset_index(name="wards_destroyed")
-    ward_kill_event = ward_kill_event.rename(columns={"killerId": "participant_id"})
-    flat_agg.append(ward_kill_event)
+   # Wards
+   _add(_agg_count(events_df[events_df["type"] == "WARD_PLACED"], "creatorId", "wards_placed"))
+   _add(_agg_count(events_df[events_df["type"] == "WARD_KILL"],   "killerId", "wards_destroyed"))
 
-    # Dragons
-    dragons = events_df[(events_df["type"] == "ELITE_MONSTER_KILL") & (events_df["monsterType"] == "DRAGON")]
-    drag_event = dragons.groupby(["match_id", "frame", "killerId"]).size().reset_index(name="dragons_killed")
-    drag_event = drag_event.rename(columns={"killerId": "participant_id"})
-    flat_agg.append(drag_event)
+   # Elite monsters — same pattern, different monsterType filter
+   monsters = events_df[events_df["type"] == "ELITE_MONSTER_KILL"]
+   for monster_type, feat_name in [
+       ("DRAGON",       "dragons_killed"),
+       ("BARON_NASHOR", "barons_killed"),
+       ("RIFTHERALD",   "heralds_killed"),
+       ("HORDE",        "grubs_killed"),
+   ]:
+    _add(_agg_count(monsters[monsters["monsterType"] == monster_type], "killerId", feat_name))
 
-    # Baron
-    barons = events_df[(events_df["type"] == "ELITE_MONSTER_KILL") & (events_df["monsterType"] == "BARON_NASHOR")]
-    baron_event = barons.groupby(["match_id", "frame", "killerId"]).size().reset_index(name="barons_killed")
-    baron_event = baron_event.rename(columns={"killerId": "participant_id"})
-    flat_agg.append(baron_event)
+   # Buildings
+   _add(_agg_count(events_df[events_df["type"] == "BUILDING_KILL"],          "killerId", "turrets_killed"))
+   _add(_agg_count(events_df[events_df["type"] == "TURRET_PLATE_DESTROYED"], "killerId", "plates_taken"))
 
-    # Rift Herald / Void Grubs
-    heralds = events_df[(events_df["type"] == "ELITE_MONSTER_KILL") & (events_df["monsterType"] == "RIFTHERALD")]
-    herald_event = heralds.groupby(["match_id", "frame", "killerId"]).size().reset_index(name="heralds_killed")
-    herald_event = herald_event.rename(columns={"killerId": "participant_id"})
-    flat_agg.append(herald_event)
+   # Merge all features
+   if not flat_agg:
+       return None
+   
+   result = flat_agg[0]
+   for feat_df in flat_agg[1:]:
+       result = result.merge(feat_df, on=["match_id", "frame", "participant_id"], how="outer")
+       
+   return result
 
-    grubs = events_df[(events_df["type"] == "ELITE_MONSTER_KILL") & (events_df["monsterType"] == "HORDE")]
-    grubs_event = grubs.groupby(["match_id", "frame", "killerId"]).size().reset_index(name="grubs_killed")
-    grubs_event = grubs_event.rename(columns={"killerId": "participant_id"})
-    flat_agg.append(grubs_event)
 
-    #### Turrets
-    tower = events_df[events_df["type"] == "BUILDING_KILL"]
-    tower_kill_event = tower.groupby(["match_id", "frame", "killerId"]).size().reset_index(name="turrets_killed")
-    tower_kill_event = tower_kill_event.rename(columns={"killerId": "participant_id"})
-    flat_agg.append(tower_kill_event)
-
-    # Turret Plates
-    plates = events_df[events_df["type"] == "TURRET_PLATE_DESTROYED"]
-    tower_plates_taken = plates.groupby(["match_id", "frame", "killerId"]).size().reset_index(name="plates_taken")
-    tower_plates_taken = tower_plates_taken.rename(columns={"killerId": "participant_id"})
-    flat_agg.append(tower_plates_taken)
-
-    # Bounty Gold Earned (sum, not count)
-    bounty_kills = events_df[events_df["type"] == "CHAMPION_KILL"].dropna(subset=["shutdownBounty"])
-    bounty_event = bounty_kills.groupby(["match_id", "frame", "killerId"])["shutdownBounty"].sum().reset_index(name="bounty_gold_earned")
-    bounty_event = bounty_event.rename(columns={"killerId": "participant_id"})
-    flat_agg.append(bounty_event)
-
-    flat_event_features = flat_agg[0]
-    for eventf in flat_agg[1:]:
-        flat_event_features = flat_event_features.merge(eventf, on=["match_id", "frame", "participant_id"], how="outer")
-
-    return flat_event_features
