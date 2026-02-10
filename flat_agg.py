@@ -1,63 +1,75 @@
+import pandas as pd
+
 def get_flat_events_aggregation(events_df):
-   flat_agg = []
+    if events_df.empty:
+        return None
 
-   def _agg_count(df, group_col, feat_name):
-       """Group by match_id/frame/group_col, count rows, rename to participant_id."""
+    # This list will hold all our little dataframes (kills, wards, etc.)
+    partial_dfs = []
 
-       if df.empty:
-           return None
-       
-       result = df.groupby(["match_id", "frame", group_col]).size().reset_index(name=feat_name)
-       return result.rename(columns={group_col: "participant_id"})
-   
-   def _agg_sum(df, group_col, value_col, feat_name):
-       """Group by match_id/frame/group_col, sum a column, rename to participant_id."""
+    # Helper: filters invalid IDs, counts occurrences, and sets the index for easy merging
+    def count_events(df, user_col, feature_name):
+        if df.empty or user_col not in df.columns:
+            return
+        
+        # Filter: ID must exist and not be 0 (Neutral/Minion)
+        valid = df[df[user_col].notna() & (df[user_col] != 0)]
+        
+        if not valid.empty:
+            # Group by Match -> Frame -> Player
+            agg = valid.groupby(["match_id", "frame", user_col]).size()
+            agg.name = feature_name
+            agg.index.names = ["match_id", "frame", "participant_id"]
+            partial_dfs.append(agg)
 
-       if df.empty:
-           return None
-       
-       result = df.groupby(["match_id", "frame", group_col])[value_col].sum().reset_index(name=feat_name)
-       return result.rename(columns={group_col: "participant_id"})
-   def _add(result):
-       
-       if result is not None:
-           flat_agg.append(result)
+    # --- 1. Simple Counts ---
+    # (Event Type, Column to Count, New Column Name)
+    metrics = [
+        ("CHAMPION_KILL", "killerId", "kills_in_frame"),
+        ("CHAMPION_KILL", "victimId", "deaths_in_frame"),
+        ("WARD_PLACED",   "creatorId", "wards_placed"),
+        ("WARD_KILL",     "killerId", "wards_destroyed"),
+        ("BUILDING_KILL", "killerId", "turrets_killed"),
+        ("TURRET_PLATE_DESTROYED", "killerId", "plates_taken")
+    ]
 
-   # Champion kills — one filter, three features (kills, deaths, assists)
-   champ_kills = events_df[events_df["type"] == "CHAMPION_KILL"]
-   _add(_agg_count(champ_kills, "killerId",  "kills_in_frame"))
-   _add(_agg_count(champ_kills, "victimId",  "deaths_in_frame"))
-   assists = champ_kills.dropna(subset=["assistingParticipantIds"]).explode("assistingParticipantIds")
-   _add(_agg_count(assists, "assistingParticipantIds", "assists_in_frame"))
-   bounties = champ_kills.dropna(subset=["shutdownBounty"])
-   _add(_agg_sum(bounties, "killerId", "shutdownBounty", "bounty_gold_earned"))
+    for evt_type, col, name in metrics:
+        count_events(events_df[events_df["type"] == evt_type], col, name)
 
-   # Wards
-   _add(_agg_count(events_df[events_df["type"] == "WARD_PLACED"], "creatorId", "wards_placed"))
-   _add(_agg_count(events_df[events_df["type"] == "WARD_KILL"],   "killerId", "wards_destroyed"))
+    # --- 2. Assists ---
+    # We assume 'assistingParticipantIds' is already a list. If not, this won't error, but won't count correctly.
+    kills = events_df[events_df["type"] == "CHAMPION_KILL"]
+    if "assistingParticipantIds" in kills.columns:
+        assists = kills.explode("assistingParticipantIds")
+        count_events(assists, "assistingParticipantIds", "assists_in_frame")
 
-   # Elite monsters — same pattern, different monsterType filter
-   monsters = events_df[events_df["type"] == "ELITE_MONSTER_KILL"]
-   for monster_type, feat_name in [
-       ("DRAGON",       "dragons_killed"),
-       ("BARON_NASHOR", "barons_killed"),
-       ("RIFTHERALD",   "heralds_killed"),
-       ("HORDE",        "grubs_killed"),
-   ]:
-    _add(_agg_count(monsters[monsters["monsterType"] == monster_type], "killerId", feat_name))
+    # --- 3. Monsters (Crash Fixed) ---
+    monsters = events_df[events_df["type"] == "ELITE_MONSTER_KILL"]
+    if not monsters.empty and "monsterType" in monsters.columns:
+        monster_map = {
+            "DRAGON": "dragons_killed",
+            "BARON_NASHOR": "barons_killed",
+            "RIFTHERALD": "heralds_killed",
+            "HORDE": "grubs_killed"
+        }
+        for m_type, name in monster_map.items():
+            count_events(monsters[monsters["monsterType"] == m_type], "killerId", name)
 
-   # Buildings
-   _add(_agg_count(events_df[events_df["type"] == "BUILDING_KILL"],          "killerId", "turrets_killed"))
-   _add(_agg_count(events_df[events_df["type"] == "TURRET_PLATE_DESTROYED"], "killerId", "plates_taken"))
+    # --- 4. Bounty Gold (Summation) ---
+    if "shutdownBounty" in kills.columns:
+        valid_bounty = kills[kills["shutdownBounty"] > 0]
+        if not valid_bounty.empty:
+            agg = valid_bounty.groupby(["match_id", "frame", "killerId"])["shutdownBounty"].sum()
+            agg.name = "bounty_gold_earned"
+            agg.index.names = ["match_id", "frame", "participant_id"]
+            partial_dfs.append(agg)
 
-   # Merge all features
-   if not flat_agg:
-       return None
-   
-   result = flat_agg[0]
-   for feat_df in flat_agg[1:]:
-       result = result.merge(feat_df, on=["match_id", "frame", "participant_id"], how="outer")
-       
-   return result
+    # --- 5. Final Merge ---
+    if not partial_dfs:
+        return None
 
-
+    # Combine everything at once (Fastest method)
+    result = pd.concat(partial_dfs, axis=1)
+    
+    # Fill missing values with 0 and return regular columns
+    return result.fillna(0).reset_index()
